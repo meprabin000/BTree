@@ -367,8 +367,8 @@ public class BTreeFile extends IndexFile implements GlobalConst {
 
 	{
 		// log the error message if the key is invalid (gracefully)
-		if (!isValidKey(key)) {
-			logger.log(LogType.Error, "Key is not an instance of a valid type IntegerKey");
+		if (!isValidKey(key, headerPage.get_keyType())) {
+			logger.log(LogType.Error, "Key is not valid. Key type should match headerPage keyType");
 			return;
 		}
 
@@ -385,8 +385,10 @@ public class BTreeFile extends IndexFile implements GlobalConst {
 				updateHeader(currentPageId);
 				unpinPage(currentPageId, true);
 			} else {
+				// if not null, split occured
 				KeyDataEntry newRootEntry = _insert(key, rid, headerPage.get_rootId());
 
+				// create a new index page, add the newRootEntry, and update the header
 				if (newRootEntry != null) {
 					BTIndexPage newIndexPage = new BTIndexPage(NodeType.INDEX);
 					newIndexPage.insertKey(newRootEntry.key, ((IndexData)newRootEntry.data).getData());
@@ -494,12 +496,17 @@ public class BTreeFile extends IndexFile implements GlobalConst {
 				 * C = newLeafPage
 				 * -> = next page
 				 * <- = prev page, then,
-				 * When we add C in between, A -> points to C, 
-				 * C -> points to B, C <- points to A, and B <- points to C
+				 * When we add C in between A -> B, new connections are formed as
+				 * A -> points to C, 
+				 * C -> points to B, 
+				 * C <- points to A, and 
+				 * B <- points to C
 				 */
 				currentLeafPage.setNextPage(newLeafPageId);
 				newLeafPage.setPrevPage(currentLeafPageId);
 				newLeafPage.setNextPage(currentPage.getNextPage());
+
+				// B <- C if the currentLeafPage has a valid next page
 				if (newLeafPage.getNextPage().pid != INVALID_PAGE) {
 					BTLeafPage rightMostPage = new BTLeafPage(newLeafPage.getNextPage(), headerPage.get_keyType());
 					rightMostPage.setPrevPage(newLeafPageId);
@@ -847,12 +854,19 @@ public class BTreeFile extends IndexFile implements GlobalConst {
 
 	}
 
-	public boolean isValidKey (KeyClass key) {
+	public boolean isValidKey (KeyClass key, int headerKeyType) {
 		// validates the key to be of type integer
 		if (key instanceof IntegerKey) {
-			return true;
-		} else {
-			return false;
+			if (headerKeyType == AttrType.attrInteger) {
+				return true;
+			}
+		} else if (key instanceof StringKey) {
+			if (headerKeyType == AttrType.attrString) {
+				return true;
+			}
 		}
+		return false;
 	}
+
+
 }
