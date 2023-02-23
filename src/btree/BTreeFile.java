@@ -65,7 +65,7 @@ public class BTreeFile extends IndexFile implements GlobalConst {
 	private BTreeHeaderPage headerPage;
 	private PageId headerPageId;
 	private String dbname;
-	private Logger logger;
+	private Logger logger = new Logger(BTreeFile.class);
 
 	/**
 	 * Access method to data member.
@@ -166,7 +166,7 @@ public class BTreeFile extends IndexFile implements GlobalConst {
 
 		headerPage = new BTreeHeaderPage(headerPageId);
 		dbname = new String(filename);
-		logger = new Logger(BTreeFile.class);
+		this.logger = new Logger(BTreeFile.class);
 		/*
 		 * 
 		 * - headerPageId is the PageId of this BTreeFile's header page; -
@@ -384,13 +384,14 @@ public class BTreeFile extends IndexFile implements GlobalConst {
 
 				updateHeader(currentPageId);
 				unpinPage(currentPageId, true);
+
 			} else {
 				// if not null, split occured
 				KeyDataEntry newRootEntry = _insert(key, rid, headerPage.get_rootId());
 
 				// create a new index page, add the newRootEntry, and update the header
 				if (newRootEntry != null) {
-					BTIndexPage newIndexPage = new BTIndexPage(NodeType.INDEX);
+					BTIndexPage newIndexPage = new BTIndexPage(headerPage.get_keyType());
 					newIndexPage.insertKey(newRootEntry.key, ((IndexData)newRootEntry.data).getData());
 
 					newIndexPage.setPrevPage(headerPage.get_rootId());
@@ -439,7 +440,7 @@ public class BTreeFile extends IndexFile implements GlobalConst {
 				unpinPage(nextPageId, true);
 			} else { // if no space is available split the index page
 				// create a new index page
-				BTIndexPage newIndexPage = new BTIndexPage(headerPage.getType());
+				BTIndexPage newIndexPage = new BTIndexPage(headerPage.get_keyType());
 				PageId newIndexPageId = newIndexPage.getCurPage();
 
 				RID delRID = new RID();
@@ -452,7 +453,7 @@ public class BTreeFile extends IndexFile implements GlobalConst {
 				// make equal split
 				RID newRID = new RID();
 				KeyDataEntry lastEntry = null;
-				for (KeyDataEntry tempEntry = currentIndexPage.getFirst(newRID); currentIndexPage.available_space() > newIndexPage.available_space(); tempEntry = currentIndexPage.getFirst(newRID)) {
+				for (KeyDataEntry tempEntry = newIndexPage.getFirst(newRID); newIndexPage.available_space() < currentIndexPage.available_space(); tempEntry = newIndexPage.getFirst(newRID)) {
 					currentIndexPage.insertKey(tempEntry.key, ((IndexData)tempEntry.data).getData());
 					newIndexPage.deleteSortedRecord(newRID);
 					lastEntry = tempEntry;
@@ -467,10 +468,13 @@ public class BTreeFile extends IndexFile implements GlobalConst {
 				
 				unpinPage(currentIndexPageId, true);
 				// get the keyDataEntry of newIndexPage (right)
-				upEntry = newIndexPage.getFirst(delRID);
+				KeyDataEntry firstEntry = newIndexPage.getFirst(delRID);
+				upEntry = new KeyDataEntry(firstEntry.key, firstEntry.data);
 				newIndexPage.setPrevPage(((IndexData)upEntry.data).getData());
 				unpinPage(newIndexPageId, true);
 				((IndexData)upEntry.data).setData(newIndexPageId);
+				// in the index page, the entry must be pushed up, rather than copy up
+				newIndexPage.deleteSortedRecord(delRID);
 				// push up the keyDataEntry
 				return upEntry;
 			}
@@ -496,19 +500,20 @@ public class BTreeFile extends IndexFile implements GlobalConst {
 				 * C = newLeafPage
 				 * -> = next page
 				 * <- = prev page, then,
-				 * When we add C in between A -> B, new connections are formed as
+				 * When we add C in between A <-> B, new connections are formed as: A <-> C <-> B
 				 * A -> points to C, 
 				 * C -> points to B, 
 				 * C <- points to A, and 
 				 * B <- points to C
 				 */
+				int nextPagePid = currentLeafPage.getNextPage().pid;
 				currentLeafPage.setNextPage(newLeafPageId);
 				newLeafPage.setPrevPage(currentLeafPageId);
-				newLeafPage.setNextPage(currentPage.getNextPage());
+				newLeafPage.setNextPage(new PageId(nextPagePid));
 
 				// B <- C if the currentLeafPage has a valid next page
-				if (newLeafPage.getNextPage().pid != INVALID_PAGE) {
-					BTLeafPage rightMostPage = new BTLeafPage(newLeafPage.getNextPage(), headerPage.get_keyType());
+				if (nextPagePid != INVALID_PAGE) {
+					BTLeafPage rightMostPage = new BTLeafPage(new PageId(nextPagePid), headerPage.get_keyType());
 					rightMostPage.setPrevPage(newLeafPageId);
 					unpinPage(rightMostPage.getCurPage(), true);
 				}
@@ -763,8 +768,61 @@ public class BTreeFile extends IndexFile implements GlobalConst {
 			throws LeafDeleteException, KeyNotMatchException, PinPageException,
 			ConstructPageException, IOException, UnpinPageException,
 			PinPageException, IndexSearchException, IteratorException {
-            // [ASantra: 1/7/2023] Remove the return statement and start your code.
+
+		// log the error message if the key is invalid (gracefully)
+		if (!isValidKey(key, headerPage.get_keyType())) {
+			logger.log(LogType.KeyNotValid, "Key is not valid. Key type should match headerPage keyType");
 			return false;
+		}
+        
+		// Create a leafpage; a iterator of type RID and a KeyDataEntry entry
+        BTLeafPage leafPage;
+        KeyDataEntry entry;
+        RID curRID = new RID();
+        PageId nextPageId;
+		boolean isDeleted = false;
+
+        // Use the function findrunStart
+        leafPage = findRunStart(key, curRID);
+        
+		// if leafpage is NULL return false
+        if (leafPage == null) {
+			this.logger.log(LogType.KeyNotFound, "Key " + ((IntegerKey) key).getKey() + " not found" );
+            return false;
+		}
+
+		// get the first entry of the key
+        entry = leafPage.getCurrent(curRID);
+
+        while (true) {
+			// if entry is null, all duplicates from previous page were deleted
+			// so, we go to the next page and grab the first entry
+            while (entry == null) {
+                nextPageId = leafPage.getNextPage();
+                unpinPage(leafPage.getCurPage());
+                if (nextPageId.pid == INVALID_PAGE) {
+                    return isDeleted;
+                }
+                leafPage = new BTLeafPage(nextPageId, headerPage.get_keyType());
+                entry = leafPage.getFirst(curRID);
+            }
+
+			// if key is greater than entry.key, then break
+            if (BT.keyCompare(key, entry.key) > 0) {
+                break;
+            }
+
+			// delete all duplicate entries
+            while (leafPage.delEntry(new KeyDataEntry(key, rid)) == true) {
+				isDeleted = true;
+            }
+
+			// get the currentRid
+            entry = leafPage.getCurrent(curRID);
+        }
+
+        unpinPage(leafPage.getCurPage());
+        return isDeleted;
 	}
 	/**
 	 * create a scan with given keys Cases: (1) lo_key = null, hi_key = null
