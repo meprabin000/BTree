@@ -772,24 +772,34 @@ public class BTreeFile extends IndexFile implements GlobalConst {
 			throws LeafDeleteException, KeyNotMatchException, PinPageException,
 			ConstructPageException, IOException, UnpinPageException,
 			PinPageException, IndexSearchException, IteratorException {
+
+		// log the error message if the key is invalid (gracefully)
+		if (!isValidKey(key, headerPage.get_keyType())) {
+			logger.log(LogType.Error, "Key is not valid. Key type should match headerPage keyType");
+			return false;
+		}
         
 		// Create a leafpage; a iterator of type RID and a KeyDataEntry entry
         BTLeafPage leafPage;
         KeyDataEntry entry;
         RID curRID = new RID();
         PageId nextPageId;
-        boolean isDeleted = false;
+		boolean isDeleted = false;
 
         // Use the function findrunStart
         leafPage = findRunStart(key, curRID);
         // if leafpage is NULL return false
 
-        if (leafPage == null)
-            return isDeleted;
+        if (leafPage == null) {
+			this.logger.log(LogType.KeyNotFound, "Key " + ((IntegerKey) key).getKey() + " not found" );
+            return false;
+		}
 
         entry = leafPage.getCurrent(curRID);
 
         while (true) {
+			// if entry is null, all duplicates from previous page were deleted
+			// so, we go to the next page and grab the first entry
             while (entry == null) {
                 nextPageId = leafPage.getNextPage();
                 unpinPage(leafPage.getCurPage());
@@ -804,11 +814,12 @@ public class BTreeFile extends IndexFile implements GlobalConst {
                 break;
             }
 
-            while (leafPage.delEntry(new KeyDataEntry(key, curRID)) == true) {
-                unpinPage(leafPage.getCurPage(), true);
-                isDeleted = true;
+			// delete all duplicate entries
+            while (leafPage.delEntry(new KeyDataEntry(key, rid)) == true) {
+				isDeleted = true;
             }
 
+			// get the currentRid
             entry = leafPage.getCurrent(curRID);
         }
 
