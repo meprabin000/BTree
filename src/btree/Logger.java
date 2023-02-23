@@ -9,6 +9,6 @@ public class Logger {
     }
 
     public void log (LogType logType, String message) {
-        System.out.println("[" + logType.name() + "][" + logClass.getName() + "]: " + message);
+        System.out.println("[" + logType.name() + "][" + this.logClass.getName() + "]: " + message);
     }
 }
