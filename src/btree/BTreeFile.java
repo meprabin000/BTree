@@ -383,7 +383,6 @@ public class BTreeFile extends IndexFile implements GlobalConst {
 				newRootPage.insertRecord(key, rid);
 
 				updateHeader(currentPageId);
-				this.logger.log(LogType.Info, newRootPage.getNextPage().pid + " " + currentPageId.pid + " " + newRootPage.getPrevPage().pid);
 				unpinPage(currentPageId, true);
 
 			} else {
@@ -441,7 +440,7 @@ public class BTreeFile extends IndexFile implements GlobalConst {
 				unpinPage(nextPageId, true);
 			} else { // if no space is available split the index page
 				// create a new index page
-				BTIndexPage newIndexPage = new BTIndexPage(headerPage.getType());
+				BTIndexPage newIndexPage = new BTIndexPage(headerPage.get_keyType());
 				PageId newIndexPageId = newIndexPage.getCurPage();
 
 				RID delRID = new RID();
@@ -454,7 +453,7 @@ public class BTreeFile extends IndexFile implements GlobalConst {
 				// make equal split
 				RID newRID = new RID();
 				KeyDataEntry lastEntry = null;
-				for (KeyDataEntry tempEntry = currentIndexPage.getFirst(newRID); currentIndexPage.available_space() > newIndexPage.available_space(); tempEntry = currentIndexPage.getFirst(newRID)) {
+				for (KeyDataEntry tempEntry = newIndexPage.getFirst(newRID); newIndexPage.available_space() < currentIndexPage.available_space(); tempEntry = newIndexPage.getFirst(newRID)) {
 					currentIndexPage.insertKey(tempEntry.key, ((IndexData)tempEntry.data).getData());
 					newIndexPage.deleteSortedRecord(newRID);
 					lastEntry = tempEntry;
@@ -469,16 +468,13 @@ public class BTreeFile extends IndexFile implements GlobalConst {
 				
 				unpinPage(currentIndexPageId, true);
 				// get the keyDataEntry of newIndexPage (right)
-				upEntry = newIndexPage.getFirst(delRID);
+				KeyDataEntry firstEntry = newIndexPage.getFirst(delRID);
+				upEntry = new KeyDataEntry(firstEntry.key, firstEntry.data);
 				newIndexPage.setPrevPage(((IndexData)upEntry.data).getData());
 				unpinPage(newIndexPageId, true);
 				((IndexData)upEntry.data).setData(newIndexPageId);
 				// in the index page, the entry must be pushed up, rather than copy up
-				try {
-					newIndexPage.deleteKey(upEntry.key);
-				} catch (IndexFullDeleteException err) {
-					this.logger.log(LogType.Error, err.getMessage());
-				}
+				newIndexPage.deleteSortedRecord(delRID);
 				// push up the keyDataEntry
 				return upEntry;
 			}
@@ -775,7 +771,7 @@ public class BTreeFile extends IndexFile implements GlobalConst {
 
 		// log the error message if the key is invalid (gracefully)
 		if (!isValidKey(key, headerPage.get_keyType())) {
-			logger.log(LogType.Error, "Key is not valid. Key type should match headerPage keyType");
+			logger.log(LogType.KeyNotValid, "Key is not valid. Key type should match headerPage keyType");
 			return false;
 		}
         
@@ -788,13 +784,14 @@ public class BTreeFile extends IndexFile implements GlobalConst {
 
         // Use the function findrunStart
         leafPage = findRunStart(key, curRID);
-        // if leafpage is NULL return false
-
+        
+		// if leafpage is NULL return false
         if (leafPage == null) {
 			this.logger.log(LogType.KeyNotFound, "Key " + ((IntegerKey) key).getKey() + " not found" );
             return false;
 		}
 
+		// get the first entry of the key
         entry = leafPage.getCurrent(curRID);
 
         while (true) {
@@ -810,6 +807,7 @@ public class BTreeFile extends IndexFile implements GlobalConst {
                 entry = leafPage.getFirst(curRID);
             }
 
+			// if key is greater than entry.key, then break
             if (BT.keyCompare(key, entry.key) > 0) {
                 break;
             }
